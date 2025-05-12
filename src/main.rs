@@ -6,7 +6,13 @@ mod ui;
 
 use anyhow::Result;
 use std::process;
-use std::sync::mpsc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
+use std::thread;
+use std::time::Duration;
 
 fn main() -> Result<()> {
     let mut ui = ui::UI::new();
@@ -76,24 +82,44 @@ fn main() -> Result<()> {
                 if mapping_thread.is_none() {
                     ui.show_mapping_active()?;
 
-                    // Setup Ctrl+C handler
+                    // Set up a way to detect when the user wants to stop mapping
                     let (tx, rx) = mpsc::channel();
-                    let tx_clone = tx.clone();
 
-                    ctrlc::set_handler(move || {
-                        let _ = tx_clone.send(());
-                    })?;
+                    // Create a separate thread to watch for user input to stop mapping
+                    let user_running = Arc::new(AtomicBool::new(true));
+                    let user_running_clone = user_running.clone();
+
+                    // This thread will watch for 'q' key press from the UI
+                    let ui_thread = thread::spawn(move || {
+                        while user_running_clone.load(Ordering::SeqCst) {
+                            // Check for 'q' key press to quit
+                            if let Ok(crossterm::event::Event::Key(key)) =
+                                crossterm::event::poll(Duration::from_millis(100))
+                                    .and_then(|_| crossterm::event::read())
+                            {
+                                if let crossterm::event::KeyCode::Delete = key.code {
+                                    let _ = tx.send(());
+                                    break;
+                                }
+                            }
+                        }
+                    });
 
                     // Start the mapping thread
                     mapping_thread = Some(mapper.start_mapping()?);
 
-                    // Wait for Ctrl+C
+                    // Wait for signal from UI thread (user pressed 'q')
                     rx.recv()?;
+
+                    user_running.store(false, Ordering::SeqCst);
+
                     mapper.stop_mapping();
 
                     if let Some(handle) = mapping_thread.take() {
                         handle.join().expect("Failed to join mapping thread")?;
                     }
+
+                    ui_thread.join().expect("Failed to join UI thread");
                 }
             }
             4 => {

@@ -6,6 +6,6 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.98"
 crossterm = "0.29.0"
-ctrlc = "3.4.7"
 evdev = "0.13.1"
+signal-hook = "0.3.18"
 thiserror = "2.0.12"

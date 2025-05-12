@@ -258,7 +258,7 @@ impl UI {
             MoveTo(2, 4),
             Print("Your keyboard inputs are now being sent to the virtual controllers."),
             MoveTo(2, 6),
-            Print("Press Ctrl+C to stop and return to the menu.")
+            Print("Press Delete to stop and return to the menu.")
         )?;
 
         self.stdout.flush()?;

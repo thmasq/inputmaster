@@ -65,10 +65,10 @@ impl VirtualController {
             .insert(KeyCode::KEY_RIGHT, KeyCode::BTN_DPAD_RIGHT);
 
         // Face buttons
-        self.key_mapping.insert(KeyCode::KEY_J, KeyCode::BTN_SOUTH); // A
-        self.key_mapping.insert(KeyCode::KEY_K, KeyCode::BTN_EAST); // B
-        self.key_mapping.insert(KeyCode::KEY_U, KeyCode::BTN_NORTH); // X
-        self.key_mapping.insert(KeyCode::KEY_I, KeyCode::BTN_WEST); // Y
+        self.key_mapping.insert(KeyCode::KEY_K, KeyCode::BTN_SOUTH); // A
+        self.key_mapping.insert(KeyCode::KEY_L, KeyCode::BTN_EAST); // B
+        self.key_mapping.insert(KeyCode::KEY_I, KeyCode::BTN_NORTH); // X
+        self.key_mapping.insert(KeyCode::KEY_J, KeyCode::BTN_WEST); // Y
 
         // Shoulders
         self.key_mapping.insert(KeyCode::KEY_Q, KeyCode::BTN_TL); // Left Shoulder
