@@ -27,19 +27,26 @@ impl InputDevice {
     fn is_keyboard(device: &Device) -> bool {
         // Check if this device has keys that are typical for keyboards
         if let Some(keys) = device.supported_keys() {
-            // Check for some common keyboard keys
-            let keyboard_keys = [
-                KeyCode::KEY_A,
-                KeyCode::KEY_Z,
-                KeyCode::KEY_SPACE,
-                KeyCode::KEY_ENTER,
+            let essential_modifiers = [
+                KeyCode::KEY_LEFTCTRL,  // Left Ctrl
+                KeyCode::KEY_LEFTSHIFT, // Left Shift
+                KeyCode::KEY_LEFTALT,   // Left Alt
             ];
 
-            for key in keyboard_keys.iter() {
+            // Count how many essential modifiers this device has
+            let mut modifier_count = 0;
+            for key in essential_modifiers.iter() {
                 if keys.contains(*key) {
-                    return true;
+                    modifier_count += 1;
                 }
             }
+
+            // If the device is missing any of these modifiers, it's not a main keyboard
+            if modifier_count < essential_modifiers.len() {
+                return false;
+            }
+
+            return true;
         }
 
         false
