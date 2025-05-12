@@ -89,10 +89,10 @@ fn main() -> Result<()> {
                     let user_running = Arc::new(AtomicBool::new(true));
                     let user_running_clone = user_running.clone();
 
-                    // This thread will watch for 'q' key press from the UI
+                    // This thread will watch for Delete key press from the UI
                     let ui_thread = thread::spawn(move || {
                         while user_running_clone.load(Ordering::SeqCst) {
-                            // Check for 'q' key press to quit
+                            // Check for Delete key press to quit
                             if let Ok(crossterm::event::Event::Key(key)) =
                                 crossterm::event::poll(Duration::from_millis(100))
                                     .and_then(|_| crossterm::event::read())
