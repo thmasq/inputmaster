@@ -106,20 +106,32 @@ fn main() -> Result<()> {
                     });
 
                     // Start the mapping thread
-                    mapping_thread = Some(mapper.start_mapping()?);
+                    match mapper.start_mapping() {
+                        Ok(thread_handle) => {
+                            mapping_thread = Some(thread_handle);
 
-                    // Wait for signal from UI thread (user pressed 'q')
-                    rx.recv()?;
+                            // Wait for signal from UI thread (user pressed Delete key)
+                            rx.recv()?;
 
-                    user_running.store(false, Ordering::SeqCst);
+                            user_running.store(false, Ordering::SeqCst);
 
-                    mapper.stop_mapping();
+                            // Stop the mapping process
+                            mapper.stop_mapping();
 
-                    if let Some(handle) = mapping_thread.take() {
-                        handle.join().expect("Failed to join mapping thread")?;
+                            // Take the mapping thread out of the Option and join it
+                            if let Some(handle) = mapping_thread.take() {
+                                handle.join().expect("Failed to join mapping thread")?;
+                            }
+
+                            ui_thread.join().expect("Failed to join UI thread");
+                        }
+                        Err(e) => {
+                            ui.prompt_yes_no(&format!(
+                                "Failed to start mapping: {}. Continue?",
+                                e
+                            ))?;
+                        }
                     }
-
-                    ui_thread.join().expect("Failed to join UI thread");
                 }
             }
             4 => {
@@ -130,7 +142,7 @@ fn main() -> Result<()> {
         }
     }
 
-    if let Some(handle) = mapping_thread {
+    if let Some(handle) = mapping_thread.take() {
         mapper.stop_mapping();
         handle.join().expect("Failed to join mapping thread")?;
     }

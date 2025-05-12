@@ -30,33 +30,37 @@ impl DeviceMapper {
     }
 
     pub fn start_mapping(&mut self) -> Result<thread::JoinHandle<Result<()>>> {
-        let keyboard_path = std::mem::take(&mut self.keyboard.path);
-        let mut controllers = std::mem::take(&mut self.controllers);
-
-        // Create a set of all mapped keys for quick lookup
-        let mut mapped_keys = std::collections::HashSet::new();
-        for controller in &controllers {
-            for key in controller.key_mapping.keys() {
-                mapped_keys.insert(*key);
-            }
+        // Check if we have any controllers
+        if self.controllers.is_empty() {
+            return Err(anyhow::anyhow!("No controllers available to map"));
         }
+
+        // Store the path to the keyboard
+        let keyboard_path = self.keyboard.path.clone();
+
+        // Store the key mappings and device names we need to recreate
+        let controller_settings: Vec<_> = self
+            .controllers
+            .iter()
+            .map(|c| (c.name.clone(), c.key_mapping.clone()))
+            .collect();
 
         self.running.store(true, Ordering::SeqCst);
         let running = self.running.clone();
 
-        // Create a signal channel that will be used to notify the thread about signals
+        // Create a signal channel
         let (signal_tx, signal_rx) = std::sync::mpsc::channel();
 
-        // Set up a single signal handler for all relevant signals
+        // Set up signal handler
         let signal_running = running.clone();
         let signal_tx_clone = signal_tx.clone();
 
-        // Handle SIGINT (Ctrl+C), SIGTERM, and SIGHUP with signal-hook
+        // Handle SIGINT, SIGTERM, and SIGHUP
         let _signal_thread = thread::spawn(move || {
             let mut signals = signal_hook::iterator::Signals::new(&[
-                signal_hook::consts::SIGINT,  // Ctrl+C
-                signal_hook::consts::SIGTERM, // Termination signal
-                signal_hook::consts::SIGHUP,  // Terminal closed
+                signal_hook::consts::SIGINT,
+                signal_hook::consts::SIGTERM,
+                signal_hook::consts::SIGHUP,
             ])
             .unwrap();
 
@@ -69,14 +73,32 @@ impl DeviceMapper {
         });
 
         let handle = thread::spawn(move || -> Result<()> {
-            let mut keyboard = Device::open(keyboard_path)?;
+            let mut keyboard = Device::open(&keyboard_path)?;
 
-            // Grab the keyboard exclusively to intercept all events
+            // Create a set of all mapped keys for quick lookup
+            let mut mapped_keys = std::collections::HashSet::new();
+
+            // Create the controller devices
+            let mut controllers = Vec::new();
+
+            for (name, key_mapping) in controller_settings {
+                let mut controller = VirtualController::new(&name)?;
+
+                // Apply the key mappings
+                for (key, target) in key_mapping {
+                    controller.key_mapping.insert(key, target);
+                    mapped_keys.insert(key);
+                }
+
+                controllers.push(controller);
+            }
+
+            // Grab the keyboard exclusively
             match keyboard.grab() {
                 Ok(_) => {
                     println!("Keyboard grabbed successfully");
 
-                    // Create the virtual keyboard for passing through non-mapped keys
+                    // Create virtual keyboard for passing through non-mapped keys
                     let mut virtual_kbd = {
                         let supported_keys = keyboard.supported_keys().unwrap_or_default();
                         evdev::uinput::VirtualDevice::builder()?
@@ -85,18 +107,16 @@ impl DeviceMapper {
                             .build()?
                     };
 
-                    // Main processing loop with signal handling
+                    // Main processing loop
                     while running.load(Ordering::SeqCst) {
-                        // Check for signals with a short timeout to ensure responsive signal handling
+                        // Check for signals
                         match signal_rx.recv_timeout(std::time::Duration::from_millis(100)) {
                             Ok(_) => {
                                 // Signal received, exit loop
                                 println!("Signal received, exiting keyboard mapping");
                                 break;
                             }
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                                // No signal, continue processing
-                            }
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                             Err(_) => {
                                 // Channel error, exit loop
                                 eprintln!("Signal channel error, exiting keyboard mapping");
@@ -117,6 +137,7 @@ impl DeviceMapper {
                                         }
                                     }
                                 } else {
+                                    // Forward to virtual keyboard
                                     let events =
                                         [InputEvent::new(EventType::KEY.0, key_code.0, value)];
                                     virtual_kbd.emit(&events)?;
