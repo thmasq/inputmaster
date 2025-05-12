@@ -154,7 +154,10 @@ impl UI {
             )?;
 
             // Add the mapping
-            controller.key_mapping.insert(key_code, *button_code);
+            controller
+                .key_mapping
+                .write()
+                .insert(key_code, *button_code);
         }
 
         // Re-enable raw mode for the UI
@@ -230,7 +233,7 @@ impl UI {
                         "{}. {} ({} keys mapped)",
                         i + 1,
                         controller.name,
-                        controller.key_mapping.len()
+                        controller.key_mapping.read().len()
                     ))
                 )?;
             }

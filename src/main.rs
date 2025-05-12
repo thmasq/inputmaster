@@ -5,12 +5,9 @@ mod mapping;
 mod ui;
 
 use anyhow::Result;
+use crossbeam_channel::bounded;
 use std::process;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc,
-};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -83,22 +80,22 @@ fn main() -> Result<()> {
                     ui.show_mapping_active()?;
 
                     // Set up a way to detect when the user wants to stop mapping
-                    let (tx, rx) = mpsc::channel();
+                    let (stop_tx, stop_rx) = bounded(1);
 
                     // Create a separate thread to watch for user input to stop mapping
-                    let user_running = Arc::new(AtomicBool::new(true));
-                    let user_running_clone = user_running.clone();
+                    let running = Arc::new(parking_lot::Mutex::new(true));
+                    let ui_running = running.clone();
 
                     // This thread will watch for Delete key press from the UI
                     let ui_thread = thread::spawn(move || {
-                        while user_running_clone.load(Ordering::SeqCst) {
+                        while *ui_running.lock() {
                             // Check for Delete key press to quit
                             if let Ok(crossterm::event::Event::Key(key)) =
                                 crossterm::event::poll(Duration::from_millis(100))
                                     .and_then(|_| crossterm::event::read())
                             {
                                 if let crossterm::event::KeyCode::Delete = key.code {
-                                    let _ = tx.send(());
+                                    let _ = stop_tx.send(());
                                     break;
                                 }
                             }
@@ -111,11 +108,10 @@ fn main() -> Result<()> {
                             mapping_thread = Some(thread_handle);
 
                             // Wait for signal from UI thread (user pressed Delete key)
-                            rx.recv()?;
-
-                            user_running.store(false, Ordering::SeqCst);
+                            stop_rx.recv()?;
 
                             // Stop the mapping process
+                            *running.lock() = false;
                             mapper.stop_mapping();
 
                             // Take the mapping thread out of the Option and join it

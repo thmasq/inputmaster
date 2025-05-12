@@ -3,6 +3,7 @@ use anyhow::Result;
 use evdev::{Device, KeyCode};
 use std::path::PathBuf;
 
+#[allow(dead_code)]
 pub struct InputDevice {
     pub path: PathBuf,
     pub device: Device,
@@ -42,16 +43,6 @@ impl InputDevice {
         }
 
         false
-    }
-
-    pub fn get_key_event(&mut self) -> Result<Option<(KeyCode, i32)>> {
-        for event in self.device.fetch_events()? {
-            if event.event_type() == evdev::EventType::KEY {
-                return Ok(Some((KeyCode(event.code()), event.value())));
-            }
-        }
-
-        Ok(None)
     }
 }
 

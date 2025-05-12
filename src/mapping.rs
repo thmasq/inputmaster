@@ -1,19 +1,22 @@
 use crate::controller::VirtualController;
 use crate::device::InputDevice;
 use anyhow::Result;
+use crossbeam_channel::{bounded, select, tick};
 use evdev::Device;
 use evdev::EventType;
 use evdev::InputEvent;
 use evdev::KeyCode;
+use parking_lot::{Mutex, RwLock};
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
 pub struct DeviceMapper {
     pub keyboard: InputDevice,
     pub controllers: Vec<VirtualController>,
-    pub running: Arc<AtomicBool>,
+    pub running: Arc<Mutex<bool>>,
+    pub mapped_keys: Arc<RwLock<HashSet<KeyCode>>>,
 }
 
 impl DeviceMapper {
@@ -21,11 +24,18 @@ impl DeviceMapper {
         DeviceMapper {
             keyboard,
             controllers: Vec::new(),
-            running: Arc::new(AtomicBool::new(false)),
+            running: Arc::new(Mutex::new(false)),
+            mapped_keys: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
     pub fn add_controller(&mut self, controller: VirtualController) {
+        // Update mapped_keys set with the controller's key mappings
+        let mut mapped_keys = self.mapped_keys.write();
+        for key in controller.key_mapping.read().keys() {
+            mapped_keys.insert(*key);
+        }
+
         self.controllers.push(controller);
     }
 
@@ -42,20 +52,24 @@ impl DeviceMapper {
         let controller_settings: Vec<_> = self
             .controllers
             .iter()
-            .map(|c| (c.name.clone(), c.key_mapping.clone()))
+            .map(|c| {
+                let mapping = c.key_mapping.read().clone();
+                (c.name.clone(), mapping)
+            })
             .collect();
 
-        self.running.store(true, Ordering::SeqCst);
+        *self.running.lock() = true;
         let running = self.running.clone();
+        let mapped_keys_arc = self.mapped_keys.clone();
 
         // Create a signal channel
-        let (signal_tx, signal_rx) = std::sync::mpsc::channel();
+        let (signal_tx, signal_rx) = bounded(1);
 
-        // Set up signal handler
+        // Handle SIGINT, SIGTERM, and SIGHUP
         let signal_running = running.clone();
         let signal_tx_clone = signal_tx.clone();
 
-        // Handle SIGINT, SIGTERM, and SIGHUP
+        // Set up signal handler
         let _signal_thread = thread::spawn(move || {
             let mut signals = signal_hook::iterator::Signals::new(&[
                 signal_hook::consts::SIGINT,
@@ -66,7 +80,7 @@ impl DeviceMapper {
 
             for sig in signals.forever() {
                 println!("Received signal {:?}, shutting down...", sig);
-                signal_running.store(false, Ordering::SeqCst);
+                *signal_running.lock() = false;
                 let _ = signal_tx_clone.send(());
                 break;
             }
@@ -75,20 +89,21 @@ impl DeviceMapper {
         let handle = thread::spawn(move || -> Result<()> {
             let mut keyboard = Device::open(&keyboard_path)?;
 
-            // Create a set of all mapped keys for quick lookup
-            let mut mapped_keys = std::collections::HashSet::new();
+            // Get the mapped keys
+            let mapped_keys = mapped_keys_arc.read().clone();
 
             // Create the controller devices
             let mut controllers = Vec::new();
 
             for (name, key_mapping) in controller_settings {
-                let mut controller = VirtualController::new(&name)?;
+                let controller = VirtualController::new(&name)?;
 
                 // Apply the key mappings
+                let mut mapping = controller.key_mapping.write();
                 for (key, target) in key_mapping {
-                    controller.key_mapping.insert(key, target);
-                    mapped_keys.insert(key);
+                    mapping.insert(key, target);
                 }
+                drop(mapping); // Explicitly release the write lock
 
                 controllers.push(controller);
             }
@@ -107,45 +122,54 @@ impl DeviceMapper {
                             .build()?
                     };
 
+                    // Create a ticker for periodic checking (100ms)
+                    let ticker = tick(Duration::from_millis(100));
+
                     // Main processing loop
-                    while running.load(Ordering::SeqCst) {
-                        // Check for signals
-                        match signal_rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                            Ok(_) => {
+                    while *running.lock() {
+                        // Use crossbeam's select for efficient waiting
+                        select! {
+                            recv(signal_rx) -> _ => {
                                 // Signal received, exit loop
                                 println!("Signal received, exiting keyboard mapping");
                                 break;
-                            }
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                            Err(_) => {
-                                // Channel error, exit loop
-                                eprintln!("Signal channel error, exiting keyboard mapping");
-                                break;
-                            }
-                        }
-
-                        // Process keyboard events
-                        for ev in keyboard.fetch_events()? {
-                            if ev.event_type() == EventType::KEY {
-                                let key_code = KeyCode::new(ev.code());
-                                let value = ev.value();
-
-                                if mapped_keys.contains(&key_code) {
-                                    for controller in &mut controllers {
-                                        if controller.key_mapping.contains_key(&key_code) {
-                                            controller.handle_key_event(key_code, value)?;
-                                        }
-                                    }
-                                } else {
-                                    // Forward to virtual keyboard
-                                    let events =
-                                        [InputEvent::new(EventType::KEY.0, key_code.0, value)];
-                                    virtual_kbd.emit(&events)?;
+                            },
+                            recv(ticker) -> _ => {
+                                // Periodic check if we should keep running
+                                if !*running.lock() {
+                                    break;
                                 }
-                            } else {
-                                // Forward non-key events
-                                let events = [ev];
-                                virtual_kbd.emit(&events)?;
+                            },
+                            default => {
+                                // Process keyboard events
+                                for ev in keyboard.fetch_events()? {
+                                    if ev.event_type() == EventType::KEY {
+                                        let key_code = KeyCode::new(ev.code());
+                                        let value = ev.value();
+
+                                        if mapped_keys.contains(&key_code) {
+                                            for controller in &mut controllers {
+                                                let target_key = {
+                                                    let mapping = controller.key_mapping.read();
+                                                    mapping.get(&key_code).copied()
+                                                }; // Read lock is dropped here
+
+                                                if let Some(target_key) = target_key {
+                                                    controller.handle_key_event(target_key, value)?;
+                                                }
+                                            }
+                                        } else {
+                                            // Forward to virtual keyboard
+                                            let events =
+                                                [InputEvent::new(EventType::KEY.0, key_code.0, value)];
+                                            virtual_kbd.emit(&events)?;
+                                        }
+                                    } else {
+                                        // Forward non-key events
+                                        let events = [ev];
+                                        virtual_kbd.emit(&events)?;
+                                    }
+                                }
                             }
                         }
                     }
@@ -169,7 +193,7 @@ impl DeviceMapper {
     }
 
     pub fn stop_mapping(&self) {
-        self.running.store(false, Ordering::SeqCst);
+        *self.running.lock() = false;
         thread::sleep(Duration::from_millis(200));
     }
 
@@ -177,15 +201,35 @@ impl DeviceMapper {
         // Wait for a key press from the keyboard
         println!("Press a key to capture mapping...");
 
-        loop {
-            if let Ok(Some((key_code, value))) = self.keyboard.get_key_event() {
-                if value == 1 {
-                    // Key press (not release)
-                    return Ok(key_code);
-                }
-            }
+        // Create a copy of the path for the capture thread
+        let keyboard_path = self.keyboard.path.clone();
 
-            thread::sleep(Duration::from_millis(10));
-        }
+        // Use a channel to communicate between threads
+        let (tx, rx) = crossbeam_channel::bounded(1);
+
+        // Spawn a thread to capture the key
+        let handle = thread::spawn(move || -> Result<()> {
+            let mut keyboard = Device::open(&keyboard_path)?;
+
+            loop {
+                for event in keyboard.fetch_events()? {
+                    if event.event_type() == EventType::KEY && event.value() == 1 {
+                        // Key press (not release)
+                        let key_code = KeyCode::new(event.code());
+                        tx.send(key_code).unwrap();
+                        return Ok(());
+                    }
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        // Wait for the key to be captured
+        let key = rx.recv()?;
+
+        // Join the thread
+        handle.join().expect("Failed to join key capture thread")?;
+
+        Ok(key)
     }
 }

@@ -1,11 +1,13 @@
 use anyhow::Result;
 use evdev::{AttributeSet, EventType, InputEvent, KeyCode, uinput::VirtualDevice};
+use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub struct VirtualController {
     pub device: VirtualDevice,
     pub name: String,
-    pub key_mapping: HashMap<KeyCode, KeyCode>,
+    pub key_mapping: Arc<RwLock<HashMap<KeyCode, KeyCode>>>,
 }
 
 impl VirtualController {
@@ -37,58 +39,45 @@ impl VirtualController {
         Ok(VirtualController {
             device,
             name: name.to_string(),
-            key_mapping: HashMap::new(),
+            key_mapping: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
     pub fn apply_default_mapping(&mut self) {
-        self.key_mapping = HashMap::new();
+        let mut mapping = self.key_mapping.write();
+        mapping.clear();
 
         // WASD for D-pad
-        self.key_mapping
-            .insert(KeyCode::KEY_W, KeyCode::BTN_DPAD_UP);
-        self.key_mapping
-            .insert(KeyCode::KEY_S, KeyCode::BTN_DPAD_DOWN);
-        self.key_mapping
-            .insert(KeyCode::KEY_A, KeyCode::BTN_DPAD_LEFT);
-        self.key_mapping
-            .insert(KeyCode::KEY_D, KeyCode::BTN_DPAD_RIGHT);
+        mapping.insert(KeyCode::KEY_W, KeyCode::BTN_DPAD_UP);
+        mapping.insert(KeyCode::KEY_S, KeyCode::BTN_DPAD_DOWN);
+        mapping.insert(KeyCode::KEY_A, KeyCode::BTN_DPAD_LEFT);
+        mapping.insert(KeyCode::KEY_D, KeyCode::BTN_DPAD_RIGHT);
 
         // Arrow keys also for D-pad
-        self.key_mapping
-            .insert(KeyCode::KEY_UP, KeyCode::BTN_DPAD_UP);
-        self.key_mapping
-            .insert(KeyCode::KEY_DOWN, KeyCode::BTN_DPAD_DOWN);
-        self.key_mapping
-            .insert(KeyCode::KEY_LEFT, KeyCode::BTN_DPAD_LEFT);
-        self.key_mapping
-            .insert(KeyCode::KEY_RIGHT, KeyCode::BTN_DPAD_RIGHT);
+        mapping.insert(KeyCode::KEY_UP, KeyCode::BTN_DPAD_UP);
+        mapping.insert(KeyCode::KEY_DOWN, KeyCode::BTN_DPAD_DOWN);
+        mapping.insert(KeyCode::KEY_LEFT, KeyCode::BTN_DPAD_LEFT);
+        mapping.insert(KeyCode::KEY_RIGHT, KeyCode::BTN_DPAD_RIGHT);
 
         // Face buttons
-        self.key_mapping.insert(KeyCode::KEY_K, KeyCode::BTN_SOUTH); // A
-        self.key_mapping.insert(KeyCode::KEY_L, KeyCode::BTN_EAST); // B
-        self.key_mapping.insert(KeyCode::KEY_I, KeyCode::BTN_NORTH); // X
-        self.key_mapping.insert(KeyCode::KEY_J, KeyCode::BTN_WEST); // Y
+        mapping.insert(KeyCode::KEY_K, KeyCode::BTN_SOUTH); // A
+        mapping.insert(KeyCode::KEY_L, KeyCode::BTN_EAST); // B
+        mapping.insert(KeyCode::KEY_I, KeyCode::BTN_NORTH); // X
+        mapping.insert(KeyCode::KEY_J, KeyCode::BTN_WEST); // Y
 
         // Shoulders
-        self.key_mapping.insert(KeyCode::KEY_Q, KeyCode::BTN_TL); // Left Shoulder
-        self.key_mapping.insert(KeyCode::KEY_E, KeyCode::BTN_TR); // Right Shoulder
+        mapping.insert(KeyCode::KEY_Q, KeyCode::BTN_TL); // Left Shoulder
+        mapping.insert(KeyCode::KEY_E, KeyCode::BTN_TR); // Right Shoulder
 
         // Special buttons
-        self.key_mapping
-            .insert(KeyCode::KEY_TAB, KeyCode::BTN_SELECT); // Back
-        self.key_mapping
-            .insert(KeyCode::KEY_ENTER, KeyCode::BTN_START); // Start
-        self.key_mapping
-            .insert(KeyCode::KEY_SPACE, KeyCode::BTN_MODE); // Guide
+        mapping.insert(KeyCode::KEY_TAB, KeyCode::BTN_SELECT); // Back
+        mapping.insert(KeyCode::KEY_ENTER, KeyCode::BTN_START); // Start
+        mapping.insert(KeyCode::KEY_SPACE, KeyCode::BTN_MODE); // Guide
     }
 
-    pub fn handle_key_event(&mut self, key_code: KeyCode, value: i32) -> Result<()> {
-        if let Some(&controller_key) = self.key_mapping.get(&key_code) {
-            let events = [InputEvent::new(EventType::KEY.0, controller_key.0, value)];
-
-            self.device.emit(&events)?;
-        }
+    pub fn handle_key_event(&mut self, controller_key: KeyCode, value: i32) -> Result<()> {
+        let events = [InputEvent::new(EventType::KEY.0, controller_key.0, value)];
+        self.device.emit(&events)?;
 
         Ok(())
     }
